@@ -684,7 +684,7 @@ app.get('/', (req, res) => {
   let tab3OrderApproved   = false;
   let tab3ApprovedOrderId = null;
 
-  async function loadPayPalSDKVault(clientToken) {
+  async function loadPayPalSDKVault(clientToken, tokenAttr) {
     // 既存のスクリプトを全て削除
     ['paypal-sdk', 'paypal-sdk-vault'].forEach(id => {
       const old = document.getElementById(id);
@@ -692,17 +692,21 @@ app.get('/', (req, res) => {
     });
     if (window.paypal) delete window.paypal;
 
+    // id_token（fallback）は data-user-id-token、setup-token は data-sdk-client-token
+    const attrName = tokenAttr || 'data-user-id-token';
+
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.id  = 'paypal-sdk-vault';
-      // Vault コンポーネントは data-sdk-client-token（setup-token）を使用
       s.src = 'https://www.paypal.com/sdk/js'
             + '?client-id=${config.CLIENT_ID}'
             + '&components=vault,buttons,messages'
-            + '&currency=USD';
-      s.setAttribute('data-sdk-client-token', clientToken);
+            + '&currency=USD'
+            + '&enable-funding=paylater'
+            + '&buyer-country=US';
+      s.setAttribute(attrName, clientToken);
       s.onload  = resolve;
-      s.onerror = reject;
+      s.onerror = () => reject(new Error('PayPal SDK スクリプトの読み込みに失敗（トークンが無効または vault コンポーネントが未有効）'));
       document.head.appendChild(s);
     });
   }
@@ -745,10 +749,21 @@ app.get('/', (req, res) => {
       log(3, 'Client Token取得成功 [' + (data.method || '?') + ']（先頭40文字）: ' + data.client_token?.slice(0, 40) + '...');
       showAlert(3, 'SDK読み込み中...', 'info');
 
-      await loadPayPalSDKVault(data.client_token);
+      // id_token_fallback は data-user-id-token、v3_setup_token は data-sdk-client-token
+      const attrName = data.method === 'id_token_fallback' ? 'data-user-id-token' : 'data-sdk-client-token';
+      log(3, 'SDK属性: ' + attrName);
+      await loadPayPalSDKVault(data.client_token, attrName);
+
+      // SDK ロード確認
+      if (typeof window.paypal === 'undefined') {
+        showAlert(3, '❌ PayPal SDK の読み込みに失敗しました。Client Token が無効か、ネットワークエラーの可能性があります。', 'error');
+        vaultContainer.innerHTML = '<div style="padding:20px;font-size:13px;color:#8a0c0c;text-align:center">SDK 読み込み失敗</div>';
+        return;
+      }
+      log(3, 'SDK ロード完了。利用可能なコンポーネント: ' + Object.keys(window.paypal).join(', '));
 
       // paypal.Vault() の存在チェック（Alpha機能：有効化が必要）
-      if (typeof paypal.Vault !== 'function') {
+      if (typeof window.paypal.Vault !== 'function') {
         showAlert(3, '⚠️ <b>paypal.Vault()</b> がこのアカウントで有効ではありません。<br>Alpha機能のため、PayPal による有効化が必要です。<br>Setup Token API は正常に動作しています（下記APIログ参照）。', 'warn');
         vaultContainer.innerHTML = '<div style="padding:16px;font-size:12px;color:#856404">' +
           '<b>[モック表示]</b> paypal.Vault() が有効化された場合のUI:<br><br>' +
@@ -827,8 +842,8 @@ app.get('/', (req, res) => {
         '変更しない場合はそのまま「注文を確定する」をクリックしてください <span class="path-indicator path-b">Path B</span>', 'info');
 
     } catch(e) {
-      showAlert(3, '❌ 初期化エラー: ' + e.message, 'error');
-      log(3, 'initTab3 エラー', { error: e.message });
+      showAlert(3, '❌ 初期化エラー: ' + (e.message || String(e)), 'error');
+      log(3, 'initTab3 エラー', { name: e.name, message: e.message, stack: e.stack });
     }
   }
 
