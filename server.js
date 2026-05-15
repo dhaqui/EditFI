@@ -53,7 +53,7 @@ async function getAccessToken() {
 // Tab1: BA詳細取得（メールアドレス等）
 async function getBillingAgreement(accessToken, baId) {
   const fetch = (await import('node-fetch')).default;
-  const res = await fetch(`${config.BASE_URL}/v1/payments/billing-agreements/${baId}`, {
+  const res = await fetch(`${config.BASE_URL}/v1/billing-agreements/agreements/${baId}`, {
     headers: { 'Authorization': `Bearer ${accessToken}` },
   });
   return res.json();
@@ -276,7 +276,7 @@ app.get('/', (req, res) => {
       <div class="payment-info">
         <div>
           <div id="ba-email" style="font-weight:600;font-size:14px">読み込み中...</div>
-          <div id="ba-id" style="font-size:11px;color:#aaa;margin-top:2px">${config.BILLING_AGREEMENT_ID}</div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px">${config.BILLING_AGREEMENT_ID}</div>
         </div>
         <button class="edit-fi-btn" onclick="openEditFI()">変更 →</button>
       </div>
@@ -369,11 +369,7 @@ app.get('/', (req, res) => {
     const baRes  = await fetch('/api/ba/details');
     const baData = await baRes.json();
     log(1, 'BA詳細', baData);
-    if (baData.email) {
-      document.getElementById('ba-email').textContent = baData.email;
-    } else {
-      document.getElementById('ba-email').textContent = '（メール取得失敗）';
-    }
+    document.getElementById('ba-email').textContent = baData.email || '（メール取得失敗）';
 
     // Order作成
     log(1, 'Order作成中（Billing Agreement）...');
@@ -543,14 +539,21 @@ app.get('/', (req, res) => {
 
 // ---- API Routes ----
 
-// Tab1: BA詳細取得（メールアドレス等）
+// Tab1: BA詳細取得
 app.get('/api/ba/details', async (req, res) => {
   try {
     const token = await getAccessToken();
     const details = await getBillingAgreement(token, config.BILLING_AGREEMENT_ID);
-    // PayPalの生レスポンスをそのまま返す（デバッグ用）
     console.log('[ba/details] raw response:', JSON.stringify(details, null, 2));
-    res.json(details);
+    res.json({
+      id:    details.id,
+      state: details.state,
+      email: details.payer?.payer_info?.email,
+      name:  details.payer?.payer_info?.first_name
+             ? `${details.payer.payer_info.first_name} ${details.payer.payer_info.last_name}`
+             : null,
+      _raw_payer: details.payer,
+    });
   } catch (e) {
     console.error(e);
     res.json({ error: e.message });
