@@ -742,7 +742,7 @@ app.get('/', (req, res) => {
         return;
       }
 
-      log(3, 'Client Token取得成功（先頭40文字）: ' + data.client_token?.slice(0, 40) + '...');
+      log(3, 'Client Token取得成功 [' + (data.method || '?') + ']（先頭40文字）: ' + data.client_token?.slice(0, 40) + '...');
       showAlert(3, 'SDK読み込み中...', 'info');
 
       await loadPayPalSDKVault(data.client_token);
@@ -954,20 +954,39 @@ app.post('/api/vault/create-order', async (req, res) => {
   }
 });
 
-// Tab3: Setup Token発行（v3/vault/setup-tokens → SDK client token）
+// Tab3: Setup Token発行
+// 試行順:
+//   1. v3/vault/setup-tokens（SDD準拠の本命、Alpha機能で有効化が必要）
+//   2. v1/oauth2/token id_token（フォールバック、Tab2と同じ仕組み）
 app.get('/api/vault3/setup-token', async (req, res) => {
   try {
     if (!config.VAULT_ID) throw new Error('PAYPAL_VAULT_ID が設定されていません。.env に PAYPAL_VAULT_ID を追加してください。');
     const token      = await getAccessToken();
     const customerId = req.query.customerId || config.CUSTOMER_ID || null;
-    const result     = await createSetupToken(token, config.VAULT_ID, customerId);
-    // Setup Token API が成功すると result.id にトークンが入る
-    if (result.id) {
-      res.json({ client_token: result.id, status: result.status });
-    } else {
-      // エラー詳細をそのままフロントに返す（デバッグ用）
-      res.json({ error: result.message || result.error || JSON.stringify(result), _raw: result });
+
+    // --- 試行 1: v3/vault/setup-tokens ---
+    const v3result = await createSetupToken(token, config.VAULT_ID, customerId);
+    if (v3result.id) {
+      console.log('[vault3/setup-token] ✅ v3/vault/setup-tokens 成功');
+      return res.json({ client_token: v3result.id, status: v3result.status, method: 'v3_setup_token' });
     }
+    console.warn('[vault3/setup-token] ⚠️  v3/vault/setup-tokens 失敗 → id_token フォールバック:', v3result.message || v3result.error);
+
+    // --- 試行 2: v1/oauth2/token id_token（customerId 必須）---
+    if (!customerId) {
+      return res.json({
+        error: 'v3/vault/setup-tokens が利用不可のため id_token フォールバックを試みましたが CUSTOMER_ID が未設定です。',
+        _v3_error: v3result,
+      });
+    }
+    const idToken = await getUserIdToken(token, customerId);
+    if (idToken) {
+      console.log('[vault3/setup-token] ✅ id_token フォールバック成功');
+      return res.json({ client_token: idToken, status: 'APPROVED', method: 'id_token_fallback' });
+    }
+
+    // どちらも失敗
+    return res.json({ error: 'Setup Token の取得に失敗しました。', _v3_error: v3result });
   } catch (e) {
     console.error(e);
     res.json({ error: e.message });
