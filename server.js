@@ -751,9 +751,10 @@ app.get('/', (req, res) => {
       log(3, 'Client Token取得成功 [' + (data.method || '?') + ']（先頭40文字）: ' + data.client_token?.slice(0, 40) + '...');
       showAlert(3, 'SDK読み込み中...', 'info');
 
-      // id_token_fallback は data-user-id-token、v3_setup_token は data-sdk-client-token
-      const attrName = data.method === 'id_token_fallback' ? 'data-user-id-token' : 'data-sdk-client-token';
-      log(3, 'SDK属性: ' + attrName);
+      // SDD仕様: v3/vault/setup-tokens の結果は data-sdk-client-token として渡す
+      // id_token_fallback も data-sdk-client-token で試みる（scope: Braintree:Vault が付いているため）
+      const attrName = 'data-sdk-client-token';
+      log(3, 'SDK属性: ' + attrName + ' [method: ' + data.method + ']');
       await loadPayPalSDKVault(data.client_token, attrName);
 
       // SDK ロード確認
