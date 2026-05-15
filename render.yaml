@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: paypal-editfi-demo
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: PAYPAL_CLIENT_ID
+        sync: false          # Render Dashboard で手動入力
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_BILLING_AGREEMENT_ID
+        sync: false
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
