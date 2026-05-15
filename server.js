@@ -50,6 +50,15 @@ async function getAccessToken() {
   return data.access_token;
 }
 
+// Tab1: BA詳細取得（メールアドレス等）
+async function getBillingAgreement(accessToken, baId) {
+  const fetch = (await import('node-fetch')).default;
+  const res = await fetch(`${config.BASE_URL}/v1/payments/billing-agreements/${baId}`, {
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+  });
+  return res.json();
+}
+
 // Tab1: Billing Agreement ベースのOrder作成（Edit FI用）
 async function createOrderWithBA(accessToken) {
   const fetch = (await import('node-fetch')).default;
@@ -265,7 +274,10 @@ app.get('/', (req, res) => {
 
       <div class="section-title">支払い方法</div>
       <div class="payment-info">
-        <div>Billing Agreement: <strong id="ba-id">${config.BILLING_AGREEMENT_ID}</strong></div>
+        <div>
+          <div id="ba-email" style="font-weight:600;font-size:14px">読み込み中...</div>
+          <div id="ba-id" style="font-size:11px;color:#aaa;margin-top:2px">${config.BILLING_AGREEMENT_ID}</div>
+        </div>
         <button class="edit-fi-btn" onclick="openEditFI()">変更 →</button>
       </div>
       <p class="note">「変更」をクリックすると PayPal ポップアップが開き、<br>保存済み支払い手段を変更できます。</p>
@@ -353,6 +365,17 @@ app.get('/', (req, res) => {
   let tab1EditFIUrl = null;
 
   async function initTab1() {
+    // BA のメールアドレスを取得して表示
+    const baRes  = await fetch('/api/ba/details');
+    const baData = await baRes.json();
+    log(1, 'BA詳細', baData);
+    if (baData.email) {
+      document.getElementById('ba-email').textContent = baData.email;
+    } else {
+      document.getElementById('ba-email').textContent = '（メール取得失敗）';
+    }
+
+    // Order作成
     log(1, 'Order作成中（Billing Agreement）...');
     const res  = await fetch('/api/ba/create-order', { method: 'POST' });
     const data = await res.json();
@@ -519,6 +542,25 @@ app.get('/', (req, res) => {
 
 
 // ---- API Routes ----
+
+// Tab1: BA詳細取得（メールアドレス等）
+app.get('/api/ba/details', async (req, res) => {
+  try {
+    const token = await getAccessToken();
+    const details = await getBillingAgreement(token, config.BILLING_AGREEMENT_ID);
+    res.json({
+      id:    details.id,
+      state: details.state,
+      email: details.payer?.payer_info?.email,
+      name:  details.payer?.payer_info?.first_name
+             ? `${details.payer.payer_info.first_name} ${details.payer.payer_info.last_name}`
+             : null,
+    });
+  } catch (e) {
+    console.error(e);
+    res.json({ error: e.message });
+  }
+});
 
 // Tab1: Billing Agreement ベースのOrder作成
 app.post('/api/ba/create-order', async (req, res) => {
