@@ -29,6 +29,7 @@ const config = {
   CLIENT_SECRET:        process.env.PAYPAL_CLIENT_SECRET        || 'YOUR_SANDBOX_CLIENT_SECRET',
   BILLING_AGREEMENT_ID: process.env.PAYPAL_BILLING_AGREEMENT_ID || 'B-XXXXXXXXXXXXXXX',
   VAULT_ID:             process.env.PAYPAL_VAULT_ID             || '',  // Tab3: Vault保存済みPayment Method Token ID
+  CUSTOMER_ID:          process.env.PAYPAL_CUSTOMER_ID          || '',  // Tab3: vault.customer.id（Tab2の決済完了ログから取得）
   BASE_URL:             process.env.PAYPAL_BASE_URL              || 'https://api-m.sandbox.paypal.com',
   PORT:                 process.env.PORT                         || 3000,
 };
@@ -180,7 +181,8 @@ async function createOrderWithVault(accessToken, paymentSource) {
 
 // Tab3: Setup Token生成（v3/vault/setup-tokens）
 // Vault ComponentのSDKに渡す client token を生成する
-async function createSetupToken(accessToken, vaultId) {
+// customerId は vault.customer.id（Tab2 の決済完了ログに表示）
+async function createSetupToken(accessToken, vaultId, customerId) {
   const fetch = (await import('node-fetch')).default;
   const body = {
     payment_source: {
@@ -190,6 +192,11 @@ async function createSetupToken(accessToken, vaultId) {
       },
     },
   };
+  // customer.id があれば付与（setup-tokens API に必要な場合がある）
+  if (customerId) {
+    body.customer = { id: customerId };
+  }
+  console.log('[vault3/setup-token] request body:', JSON.stringify(body, null, 2));
   const res = await fetch(`${config.BASE_URL}/v3/vault/setup-tokens`, {
     method: 'POST',
     headers: {
@@ -199,7 +206,10 @@ async function createSetupToken(accessToken, vaultId) {
     },
     body: JSON.stringify(body),
   });
-  return res.json();
+  const text = await res.text();
+  console.log('[vault3/setup-token] HTTP status:', res.status);
+  console.log('[vault3/setup-token] raw response:', text);
+  try { return JSON.parse(text); } catch(e) { return { error: text }; }
 }
 
 // Tab3: Payment Method Token でOrder作成（Path A の createOrder コールバック / Path B の直接課金）
@@ -718,8 +728,17 @@ app.get('/', (req, res) => {
       log(3, 'Setup Token レスポンス', data);
 
       if (data.error) {
-        showAlert(3, '❌ Setup Token取得失敗: ' + data.error, 'error');
-        vaultContainer.innerHTML = '<div style="padding:20px;font-size:13px;color:#8a0c0c;text-align:center">Setup Token エラー</div>';
+        const detail = data._raw ? '<br><small>' + JSON.stringify(data._raw) + '</small>' : '';
+        showAlert(3, '❌ Setup Token取得失敗: ' + data.error + detail, 'error');
+        // CUSTOMER_ID が未設定の場合のヒントを表示
+        if (!data._raw?.name || data._raw?.name === 'INTERNAL_SERVER_ERROR') {
+          showAlert(3,
+            '❌ Setup Token取得失敗 — <b>PAYPAL_CUSTOMER_ID</b> が必要な可能性があります。<br>' +
+            'Tab 2 の決済完了ログに表示された <code>vault.customer.id</code> の値を<br>' +
+            '<code>.env</code> の <code>PAYPAL_CUSTOMER_ID</code> に設定してください。<br>' +
+            '<small>' + data.error + '</small>', 'error');
+        }
+        vaultContainer.innerHTML = '<div style="padding:20px;font-size:13px;color:#8a0c0c;text-align:center">Setup Token エラー — APIログを確認してください</div>';
         return;
       }
 
@@ -939,14 +958,15 @@ app.post('/api/vault/create-order', async (req, res) => {
 app.get('/api/vault3/setup-token', async (req, res) => {
   try {
     if (!config.VAULT_ID) throw new Error('PAYPAL_VAULT_ID が設定されていません。.env に PAYPAL_VAULT_ID を追加してください。');
-    const token  = await getAccessToken();
-    const result = await createSetupToken(token, config.VAULT_ID);
-    console.log('[vault3/setup-token] raw response:', JSON.stringify(result, null, 2));
+    const token      = await getAccessToken();
+    const customerId = req.query.customerId || config.CUSTOMER_ID || null;
+    const result     = await createSetupToken(token, config.VAULT_ID, customerId);
     // Setup Token API が成功すると result.id にトークンが入る
     if (result.id) {
       res.json({ client_token: result.id, status: result.status });
     } else {
-      throw new Error(result.message || JSON.stringify(result));
+      // エラー詳細をそのままフロントに返す（デバッグ用）
+      res.json({ error: result.message || result.error || JSON.stringify(result), _raw: result });
     }
   } catch (e) {
     console.error(e);
