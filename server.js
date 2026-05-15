@@ -548,14 +548,9 @@ app.get('/api/ba/details', async (req, res) => {
   try {
     const token = await getAccessToken();
     const details = await getBillingAgreement(token, config.BILLING_AGREEMENT_ID);
-    res.json({
-      id:    details.id,
-      state: details.state,
-      email: details.payer?.payer_info?.email,
-      name:  details.payer?.payer_info?.first_name
-             ? `${details.payer.payer_info.first_name} ${details.payer.payer_info.last_name}`
-             : null,
-    });
+    // PayPalの生レスポンスをそのまま返す（デバッグ用）
+    console.log('[ba/details] raw response:', JSON.stringify(details, null, 2));
+    res.json(details);
   } catch (e) {
     console.error(e);
     res.json({ error: e.message });
