@@ -698,15 +698,17 @@ app.get('/', (req, res) => {
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.id  = 'paypal-sdk-vault';
+      // vault コンポーネントはAlpha有効化が必要なため components に含めない
+      // SDK ロード後に paypal.Vault の存在を確認し、なければモック表示する
       s.src = 'https://www.paypal.com/sdk/js'
             + '?client-id=${config.CLIENT_ID}'
-            + '&components=vault,buttons,messages'
+            + '&components=buttons,messages'
             + '&currency=USD'
             + '&enable-funding=paylater'
             + '&buyer-country=US';
       s.setAttribute(attrName, clientToken);
       s.onload  = resolve;
-      s.onerror = () => reject(new Error('PayPal SDK スクリプトの読み込みに失敗（トークンが無効または vault コンポーネントが未有効）'));
+      s.onerror = () => reject(new Error('PayPal SDK スクリプトの読み込みに失敗（client-id または token が無効の可能性があります）'));
       document.head.appendChild(s);
     });
   }
