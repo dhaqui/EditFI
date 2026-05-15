@@ -1,5 +1,5 @@
 /**
- * PayPal Edit FI + Vault with Purchase (BNPL) デモサーバー
+ * PayPal Edit FI + Vault with Purchase (BNPL) + Vault Component デモサーバー
  *
  * 使い方:
  *   1. config の CLIENT_ID / CLIENT_SECRET / BILLING_AGREEMENT_ID を設定
@@ -9,6 +9,7 @@
  *
  *   Tab 1: Edit FI フロー（Billing Agreement + 支払い手段変更）
  *   Tab 2: Vault with Purchase フロー（JS SDK + BNPLセカンドボタン）
+ *   Tab 3: paypal.Vault() コンポーネント（Alpha / SDD実装パターン）
  */
 
 try { require('dotenv').config(); } catch(e) {} // ローカル開発時に .env を読み込む
@@ -27,6 +28,7 @@ const config = {
   CLIENT_ID:            process.env.PAYPAL_CLIENT_ID            || 'YOUR_SANDBOX_CLIENT_ID',
   CLIENT_SECRET:        process.env.PAYPAL_CLIENT_SECRET        || 'YOUR_SANDBOX_CLIENT_SECRET',
   BILLING_AGREEMENT_ID: process.env.PAYPAL_BILLING_AGREEMENT_ID || 'B-XXXXXXXXXXXXXXX',
+  VAULT_ID:             process.env.PAYPAL_VAULT_ID             || '',  // Tab3: Vault保存済みPayment Method Token ID
   BASE_URL:             process.env.PAYPAL_BASE_URL              || 'https://api-m.sandbox.paypal.com',
   PORT:                 process.env.PORT                         || 3000,
 };
@@ -176,6 +178,67 @@ async function createOrderWithVault(accessToken, paymentSource) {
   return res.json();
 }
 
+// Tab3: Setup Token生成（v3/vault/setup-tokens）
+// Vault ComponentのSDKに渡す client token を生成する
+async function createSetupToken(accessToken, vaultId) {
+  const fetch = (await import('node-fetch')).default;
+  const body = {
+    payment_source: {
+      token: {
+        id: vaultId,
+        type: 'PAYMENT_METHOD_TOKEN',
+      },
+    },
+  };
+  const res = await fetch(`${config.BASE_URL}/v3/vault/setup-tokens`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'PayPal-Request-Id': `setup-token-${Date.now()}`,
+    },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+// Tab3: Payment Method Token でOrder作成（Path A の createOrder コールバック / Path B の直接課金）
+async function createOrderWithToken(accessToken, vaultId) {
+  const fetch = (await import('node-fetch')).default;
+  const body = {
+    intent: 'CAPTURE',
+    payment_source: {
+      token: {
+        id: vaultId,
+        type: 'PAYMENT_METHOD_TOKEN',
+      },
+    },
+    purchase_units: [{
+      description: 'デモ商品（Vault Component）',
+      amount: {
+        currency_code: 'USD',
+        value: '50.00',
+        breakdown: { item_total: { currency_code: 'USD', value: '50.00' } },
+      },
+      items: [{
+        name: 'デモ商品',
+        unit_amount: { currency_code: 'USD', value: '50.00' },
+        quantity: '1',
+        category: 'PHYSICAL_GOODS',
+      }],
+    }],
+  };
+  const res = await fetch(`${config.BASE_URL}/v2/checkout/orders`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
 // 共通: Order Capture
 async function captureOrder(accessToken, orderId) {
   const fetch = (await import('node-fetch')).default;
@@ -193,8 +256,9 @@ async function captureOrder(accessToken, orderId) {
 
 // ---- Routes ----
 
-// トップページ（2タブUI）
+// トップページ（3タブUI）
 app.get('/', (req, res) => {
+  const vaultIdConfigured = config.VAULT_ID && config.VAULT_ID.length > 5;
   res.send(`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -217,6 +281,7 @@ app.get('/', (req, res) => {
     .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600; margin-left: 8px; vertical-align: middle; }
     .badge-old { background: #fff3cd; color: #856404; }
     .badge-new { background: #d4edda; color: #155724; }
+    .badge-alpha { background: #e8d5f5; color: #6f42c1; }
     .product { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid #eee; }
     .total { display: flex; justify-content: space-between; padding: 14px 0; font-weight: 700; font-size: 16px; }
     .section-title { font-size: 11px; color: #888; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -236,13 +301,21 @@ app.get('/', (req, res) => {
     @keyframes spin { to { transform: rotate(360deg); } }
     #paypal-button-container { margin-top: 16px; min-height: 60px; }
     .note { font-size: 12px; color: #888; margin-top: 8px; }
-    #log1, #log2 { margin-top: 12px; background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 11px; white-space: pre-wrap; max-height: 220px; overflow-y: auto; display: none; }
+    #log1, #log2, #log3 { margin-top: 12px; background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 11px; white-space: pre-wrap; max-height: 220px; overflow-y: auto; display: none; }
     .log-toggle { font-size: 12px; color: #888; cursor: pointer; text-align: center; display: block; margin-top: 8px; }
     .vault-result { background: #f0f9ff; border: 1px solid #b3d9f5; border-radius: 8px; padding: 14px; font-size: 12px; font-family: monospace; margin-top: 12px; display: none; }
     .vault-result strong { font-size: 13px; font-family: sans-serif; display: block; margin-bottom: 8px; color: #0c5a8a; }
     .customer-id-row { display: flex; gap: 8px; margin-top: 8px; }
     .customer-id-row input { flex: 1; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: 13px; }
     .customer-id-row button { background: #0070ba; color: white; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    /* Tab 3 Vault Component UI */
+    #vault-container { margin-top: 8px; min-height: 64px; border: 1px solid #e0e0e0; border-radius: 8px; background: #fafafa; }
+    #vault-container.loading { display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 13px; }
+    #smart-messaging-container { margin-top: 12px; }
+    .path-indicator { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 12px; font-weight: 600; margin-left: 8px; }
+    .path-a { background: #d4edda; color: #155724; }
+    .path-b { background: #e8f4fd; color: #0c5a8a; }
+    .vault-id-display { font-size: 11px; color: #999; font-family: monospace; margin-top: 4px; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -254,6 +327,7 @@ app.get('/', (req, res) => {
 <div class="tabs">
   <div class="tab active" onclick="switchTab(1)">Tab 1: Edit FI<span class="badge badge-old">Billing Agreement</span></div>
   <div class="tab" onclick="switchTab(2)">Tab 2: Vault with Purchase<span class="badge badge-new">+ BNPL</span></div>
+  <div class="tab" onclick="switchTab(3)">Tab 3: paypal.Vault()<span class="badge badge-alpha">Alpha</span></div>
 </div>
 
 <!-- ==============================
@@ -331,11 +405,77 @@ app.get('/', (req, res) => {
   </div>
 </div>
 
+<!-- ==============================
+     Tab 3: paypal.Vault() Component（Alpha）
+     ============================== -->
+<div class="tab-content" id="tab3">
+  <div class="container">
+    <div class="card">
+      <h2>チェックアウト</h2>
+
+      <div id="alert3"></div>
+
+      <div class="product">
+        <div>デモ商品</div>
+        <div style="font-weight:600">$50.00</div>
+      </div>
+      <div class="total"><span>合計</span><span>$50.00</span></div>
+
+      <div class="section-title">保存済み支払い方法</div>
+      <!-- paypal.Vault() コンポーネントがここにレンダリングされる -->
+      <!-- 表示例: PayPal | [カードアイコン] ••1234 ✏️  -->
+      <!--        PayPal | [カードアイコン] ••1234 (Pay in 4) ✏️  -->
+      <div id="vault-container" class="loading">
+        <span>${vaultIdConfigured ? 'コンポーネント読み込み中...' : '⚠️ PAYPAL_VAULT_ID が未設定です'}</span>
+      </div>
+      <div class="vault-id-display" id="vault-id-display">
+        Vault ID: ${config.VAULT_ID || '（未設定）'}
+      </div>
+
+      <!-- Smart Messaging: BNPL未選択時に表示 -->
+      <div id="smart-messaging-container"></div>
+
+      <!-- 決済フロー説明 -->
+      <div style="margin-top:16px;font-size:12px;color:#777;background:#f9f9f9;border-radius:6px;padding:10px 12px;line-height:1.6">
+        <strong style="color:#555">2パスロジック:</strong><br>
+        <span class="path-indicator path-a">Path A</span> 鉛筆アイコンで支払い手段変更 → onApprove → キャプチャ<br>
+        <span class="path-indicator path-b">Path B</span> 変更なし → Vault ID で直接注文作成＆キャプチャ
+      </div>
+
+      <button class="btn btn-primary" id="btn3" onclick="submit3()" ${vaultIdConfigured ? '' : 'disabled'}>
+        注文を確定する
+      </button>
+    </div>
+
+    <div class="vault-result" id="vault-result3">
+      <strong>✅ 決済完了</strong>
+      <div id="vault-detail3"></div>
+    </div>
+
+    <a class="log-toggle" onclick="toggleLog(3)">▼ APIログ</a>
+    <div id="log3"></div>
+  </div>
+</div>
+
 <script>
   // ---- Tab 切り替え ----
+  let tab3Initialized = false;
+
   function switchTab(n) {
     document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === n-1));
     document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === n-1));
+
+    // Tab 3 を初めて開いたときに遅延初期化
+    if (n === 3 && !tab3Initialized) {
+      tab3Initialized = true;
+      initTab3();
+    }
+
+    // Tab 3 の SDK ロード後に Tab 2 へ戻った場合は再初期化
+    if (n === 2 && tab3Initialized) {
+      const cid = document.getElementById('customer-id-input').value.trim() || null;
+      initTab2(cid);
+    }
   }
 
   // ---- ログ ----
@@ -426,8 +566,10 @@ app.get('/', (req, res) => {
 
   async function loadPayPalSDK(idToken) {
     // 既存のスクリプトを削除
-    const old = document.getElementById('paypal-sdk');
-    if (old) old.remove();
+    ['paypal-sdk', 'paypal-sdk-vault'].forEach(id => {
+      const old = document.getElementById(id);
+      if (old) old.remove();
+    });
     if (window.paypal) delete window.paypal;
 
     return new Promise((resolve, reject) => {
@@ -439,7 +581,7 @@ app.get('/', (req, res) => {
             + '&enable-funding=paylater'
             + '&currency=USD'
             + '&buyer-country=US'
-            + '&components=buttons';
+            + '&components=buttons,messages';
       s.setAttribute('data-user-id-token', idToken);
       s.onload  = resolve;
       s.onerror = reject;
@@ -526,10 +668,201 @@ app.get('/', (req, res) => {
     initTab2(cid || null);
   }
 
+  // =====================================
+  // Tab 3: paypal.Vault() Component（Alpha）
+  // =====================================
+  let tab3OrderApproved   = false;
+  let tab3ApprovedOrderId = null;
+
+  async function loadPayPalSDKVault(clientToken) {
+    // 既存のスクリプトを全て削除
+    ['paypal-sdk', 'paypal-sdk-vault'].forEach(id => {
+      const old = document.getElementById(id);
+      if (old) old.remove();
+    });
+    if (window.paypal) delete window.paypal;
+
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.id  = 'paypal-sdk-vault';
+      // Vault コンポーネントは data-sdk-client-token（setup-token）を使用
+      s.src = 'https://www.paypal.com/sdk/js'
+            + '?client-id=${config.CLIENT_ID}'
+            + '&components=vault,buttons,messages'
+            + '&currency=USD';
+      s.setAttribute('data-sdk-client-token', clientToken);
+      s.onload  = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  async function initTab3() {
+    const vaultContainer = document.getElementById('vault-container');
+    vaultContainer.classList.add('loading');
+
+    // VAULT_ID 未設定チェック
+    const vaultId = '${config.VAULT_ID}';
+    if (!vaultId || vaultId.length < 5) {
+      showAlert(3, '⚠️ <b>PAYPAL_VAULT_ID</b> が設定されていません。<br>Tab 2 で決済を完了してVault IDを取得し、<code>.env</code> の <code>PAYPAL_VAULT_ID</code> に設定してください。', 'warn');
+      vaultContainer.innerHTML = '<div style="padding:20px;font-size:13px;color:#856404;text-align:center">VAULT_ID 未設定</div>';
+      return;
+    }
+
+    log(3, 'Setup Token取得中（v3/vault/setup-tokens）...');
+    log(3, 'Vault ID: ' + vaultId);
+
+    try {
+      const res  = await fetch('/api/vault3/setup-token');
+      const data = await res.json();
+      log(3, 'Setup Token レスポンス', data);
+
+      if (data.error) {
+        showAlert(3, '❌ Setup Token取得失敗: ' + data.error, 'error');
+        vaultContainer.innerHTML = '<div style="padding:20px;font-size:13px;color:#8a0c0c;text-align:center">Setup Token エラー</div>';
+        return;
+      }
+
+      log(3, 'Client Token取得成功（先頭40文字）: ' + data.client_token?.slice(0, 40) + '...');
+      showAlert(3, 'SDK読み込み中...', 'info');
+
+      await loadPayPalSDKVault(data.client_token);
+
+      // paypal.Vault() の存在チェック（Alpha機能：有効化が必要）
+      if (typeof paypal.Vault !== 'function') {
+        showAlert(3, '⚠️ <b>paypal.Vault()</b> がこのアカウントで有効ではありません。<br>Alpha機能のため、PayPal による有効化が必要です。<br>Setup Token API は正常に動作しています（下記APIログ参照）。', 'warn');
+        vaultContainer.innerHTML = '<div style="padding:16px;font-size:12px;color:#856404">' +
+          '<b>[モック表示]</b> paypal.Vault() が有効化された場合のUI:<br><br>' +
+          '<div style="background:white;border:1px solid #ddd;border-radius:6px;padding:12px;font-size:13px;display:flex;align-items:center;gap:10px">' +
+          '<img src="https://www.paypalobjects.com/webstatic/icon/pp258.png" width="20" alt="PP">' +
+          '<span>PayPal</span>' +
+          '<span style="color:#666">|</span>' +
+          '<span>💳 ••1234</span>' +
+          '<button style="background:none;border:none;cursor:pointer;color:#0070ba;font-size:14px" title="支払い方法を変更">✏️</button>' +
+          '</div>' +
+          '<div style="margin-top:8px;background:white;border:1px solid #ddd;border-radius:6px;padding:12px;font-size:13px;display:flex;align-items:center;gap:10px">' +
+          '<img src="https://www.paypalobjects.com/webstatic/icon/pp258.png" width="20" alt="PP">' +
+          '<span>PayPal</span>' +
+          '<span style="color:#666">|</span>' +
+          '<span>💳 ••1234</span>' +
+          '<span style="background:#e8f4fd;color:#0c5a8a;font-size:10px;padding:2px 6px;border-radius:10px;font-weight:600">Pay in 4</span>' +
+          '<button style="background:none;border:none;cursor:pointer;color:#0070ba;font-size:14px" title="支払い方法を変更">✏️</button>' +
+          '</div>' +
+          '</div>';
+        log(3, '★ paypal.Vault() 未利用可能。Alpha有効化待ち。');
+
+        // Smart Messaging は表示可能な場合がある
+        if (typeof paypal.Messages === 'function') {
+          paypal.Messages({ amount: 50, placement: 'payment' })
+            .render('#smart-messaging-container');
+        }
+        return;
+      }
+
+      // paypal.Vault() コンポーネントレンダリング
+      vaultContainer.classList.remove('loading');
+      vaultContainer.innerHTML = '';
+
+      paypal.Vault({
+        createOrder: async function() {
+          log(3, 'onEdit: Order作成中（PAYMENT_METHOD_TOKEN）...');
+          const orderRes  = await fetch('/api/vault3/create-order', { method: 'POST' });
+          const orderData = await orderRes.json();
+          log(3, 'Create Order レスポンス', orderData);
+          if (orderData.error) throw new Error(orderData.error);
+          return orderData.id;
+        },
+
+        onApprove: function(data) {
+          // Path A: 買い手が支払い手段を変更・承認した
+          log(3, 'onApprove: Path A → Order承認済み: ' + data.orderID);
+          tab3OrderApproved   = true;
+          tab3ApprovedOrderId = data.orderID;
+          showAlert(3,
+            '✅ 支払い手段が変更されました <span class="path-indicator path-a">Path A</span><br>' +
+            '「注文を確定する」で決済（Capture）します。', 'info');
+          // BNPL選択後は Smart Messaging を非表示
+          document.getElementById('smart-messaging-container').style.display = 'none';
+        },
+
+        onCancel: function() {
+          log(3, 'キャンセル（変更なし）');
+          showAlert(3, '⚠️ キャンセルされました。変更なしで続行するには「注文を確定する」をクリックしてください。', 'warn');
+        },
+
+        onError: function(err) {
+          showAlert(3, '❌ SDKエラー: ' + err, 'error');
+          log(3, 'SDKエラー', { error: String(err) });
+        },
+      }).render('#vault-container');
+
+      // Smart Messaging（BNPL未選択時に表示）
+      if (typeof paypal.Messages === 'function') {
+        paypal.Messages({ amount: 50, placement: 'payment' })
+          .render('#smart-messaging-container');
+      }
+
+      showAlert(3,
+        'Vault コンポーネントが読み込まれました。<br>' +
+        '✏️ をクリックすると支払い手段を変更できます（Pay Later も選択可）。<br>' +
+        '変更しない場合はそのまま「注文を確定する」をクリックしてください <span class="path-indicator path-b">Path B</span>', 'info');
+
+    } catch(e) {
+      showAlert(3, '❌ 初期化エラー: ' + e.message, 'error');
+      log(3, 'initTab3 エラー', { error: e.message });
+    }
+  }
+
+  async function submit3() {
+    const btn = document.getElementById('btn3');
+    btn.innerHTML = '<span class="spinner"></span>処理中...';
+    btn.disabled = true;
+
+    let result;
+
+    try {
+      if (tab3OrderApproved && tab3ApprovedOrderId) {
+        // ---- Path A: 支払い手段変更済み → onApprove の Order ID をキャプチャ ----
+        log(3, '▶ Path A: Capture実行: ' + tab3ApprovedOrderId);
+        const res = await fetch('/api/capture/' + tab3ApprovedOrderId, { method: 'POST' });
+        result = await res.json();
+        log(3, 'Path A Capture レスポンス', result);
+      } else {
+        // ---- Path B: 変更なし → Vault ID で直接注文作成＆キャプチャ ----
+        log(3, '▶ Path B: Vault直接課金（create + capture）...');
+        const res = await fetch('/api/vault3/charge', { method: 'POST' });
+        result = await res.json();
+        log(3, 'Path B Charge レスポンス', result);
+      }
+
+      if (result.status === 'COMPLETED') {
+        const captureId = result.purchase_units?.[0]?.payments?.captures?.[0]?.id;
+        const pathLabel = tab3OrderApproved ? '<span class="path-indicator path-a">Path A</span>' : '<span class="path-indicator path-b">Path B</span>';
+        showAlert(3, '✅ 決済完了！ ' + pathLabel + '<br>Capture ID: ' + captureId, 'success');
+        btn.textContent = '完了';
+
+        document.getElementById('vault-detail3').innerHTML =
+          '<b>path:</b> ' + (tab3OrderApproved ? 'A (FI変更あり)' : 'B (Vault直接)') + '<br>' +
+          '<b>capture_id:</b> ' + captureId + '<br>' +
+          '<b>status:</b> ' + result.status;
+        document.getElementById('vault-result3').style.display = 'block';
+      } else {
+        showAlert(3, '❌ エラー: ' + (result.message || JSON.stringify(result)), 'error');
+        btn.textContent = '注文を確定する';
+        btn.disabled = false;
+      }
+    } catch(e) {
+      showAlert(3, '❌ 例外: ' + e.message, 'error');
+      btn.textContent = '注文を確定する';
+      btn.disabled = false;
+    }
+  }
+
   // ---- ページロード ----
   window.addEventListener('load', () => {
     initTab1();
     initTab2(null);
+    // Tab 3 は初回クリック時に遅延初期化（VAULT_ID が未設定でも問題ない）
   });
 </script>
 </body>
@@ -602,6 +935,58 @@ app.post('/api/vault/create-order', async (req, res) => {
   }
 });
 
+// Tab3: Setup Token発行（v3/vault/setup-tokens → SDK client token）
+app.get('/api/vault3/setup-token', async (req, res) => {
+  try {
+    if (!config.VAULT_ID) throw new Error('PAYPAL_VAULT_ID が設定されていません。.env に PAYPAL_VAULT_ID を追加してください。');
+    const token  = await getAccessToken();
+    const result = await createSetupToken(token, config.VAULT_ID);
+    console.log('[vault3/setup-token] raw response:', JSON.stringify(result, null, 2));
+    // Setup Token API が成功すると result.id にトークンが入る
+    if (result.id) {
+      res.json({ client_token: result.id, status: result.status });
+    } else {
+      throw new Error(result.message || JSON.stringify(result));
+    }
+  } catch (e) {
+    console.error(e);
+    res.json({ error: e.message });
+  }
+});
+
+// Tab3: Path A 用 Order作成（paypal.Vault() の createOrder コールバック経由）
+app.post('/api/vault3/create-order', async (req, res) => {
+  try {
+    if (!config.VAULT_ID) throw new Error('PAYPAL_VAULT_ID が設定されていません');
+    const token = await getAccessToken();
+    const order = await createOrderWithToken(token, config.VAULT_ID);
+    console.log('[vault3/create-order]', JSON.stringify(order, null, 2));
+    res.json(order);
+  } catch (e) {
+    console.error(e);
+    res.json({ error: e.message });
+  }
+});
+
+// Tab3: Path B 直接課金（支払い手段変更なし → Vault ID でそのままOrder作成 & Capture）
+app.post('/api/vault3/charge', async (req, res) => {
+  try {
+    if (!config.VAULT_ID) throw new Error('PAYPAL_VAULT_ID が設定されていません');
+    const token = await getAccessToken();
+    // Step 1: Order作成
+    const order = await createOrderWithToken(token, config.VAULT_ID);
+    console.log('[vault3/charge] create-order:', JSON.stringify(order, null, 2));
+    if (!order.id) throw new Error(order.message || 'Order作成失敗: ' + JSON.stringify(order));
+    // Step 2: 即座にCapture（バイヤー承認不要）
+    const result = await captureOrder(token, order.id);
+    console.log('[vault3/charge] capture:', JSON.stringify(result, null, 2));
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.json({ error: e.message });
+  }
+});
+
 // 共通: Capture
 app.post('/api/capture/:orderId', async (req, res) => {
   try {
@@ -652,6 +1037,8 @@ app.listen(config.PORT, () => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Tab 1: Edit FI（Billing Agreement）
   Tab 2: Vault with Purchase + BNPL
+  Tab 3: paypal.Vault() Component（Alpha）
+         VAULT_ID: ${config.VAULT_ID || '（未設定 — .env に PAYPAL_VAULT_ID を追加）'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 });
