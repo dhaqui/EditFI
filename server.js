@@ -590,8 +590,9 @@ app.get('/api/id-token', async (req, res) => {
 // Tab2: Vault with Purchase Order作成
 app.post('/api/vault/create-order', async (req, res) => {
   try {
-    const token         = await getAccessToken();
-    const paymentSource = req.body.paymentSource || 'paypal';
+    const token = await getAccessToken();
+    // 'paylater' は Orders API では 'paypal' として渡す（Pay Later はPayPal内の支払い方法）
+    const paymentSource = req.body.paymentSource === 'paylater' ? 'paypal' : (req.body.paymentSource || 'paypal');
     const order         = await createOrderWithVault(token, paymentSource);
     console.log('[vault/create-order]', JSON.stringify(order, null, 2));
     res.json(order);
